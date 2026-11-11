@@ -198,6 +198,7 @@ async function enableEditLink() {
     if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('Invalid edit link');
     await questionSync.checkEditLink(key);
     editKey = key;
+    syncError = '';
     try { sessionStorage.setItem(editKeyStorage, key); } catch {}
     render();
   } catch (error) {
@@ -215,6 +216,9 @@ function initializeQuestionSync() {
   }
   questionSync = createQuestionSync(window.ktQuestionBankConfig);
   $('#closeEditMode').onclick = closeEditMode;
+  window.addEventListener('hashchange', () => {
+    if (new URLSearchParams(window.location.hash.slice(1)).has('edit')) enableEditLink();
+  });
   refreshQuestionBank().then(enableEditLink);
 $('#importQuestions').onclick = async () => {
     const next = questionsToImport();
