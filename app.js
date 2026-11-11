@@ -83,7 +83,8 @@ function questionsToImport() {
 }
 
 let questionSync;
-let editorId;
+let editKey = null;
+const editKeyStorage = 'kt-present-edit-link-v1';
 let bankRevision = null;
 let editingRevision;
 let readingBank = false;
@@ -92,17 +93,17 @@ let syncStatus = 'กำลังโหลดคำถามกลาง…';
 let syncError = '';
 
 function canEditQuestions() {
-  return Boolean(questionSync && editorId === questionSync.ownerId && bankRevision !== null);
+  return Boolean(questionSync && editKey && bankRevision !== null);
 }
 
 function updateSyncControls() {
   const editor = canEditQuestions();
   $('#addQuestion').disabled = !questionSync || savingBank;
-  $('#addQuestion').textContent = editor ? '＋ เพิ่มคำถาม' : 'เข้าสู่ระบบเพื่อแก้ไข';
+  $('#addQuestion').hidden = !editor;
   $('#sharedActions').hidden = !editor;
   $('#importQuestions').hidden = !editor || !questionsToImport();
   $('#importQuestions').disabled = savingBank;
-  $('#editorSignOut').disabled = savingBank;
+  $('#closeEditMode').disabled = savingBank;
   $('#undoDelete').disabled = savingBank || !editor;
   $('#saveNote').textContent = syncError || syncStatus;
 }
@@ -151,7 +152,7 @@ async function saveQuestionBank(next, revision = bankRevision) {
   syncError = '';
   updateSyncControls();
   try {
-    const saved = await questionSync.write(next, revision);
+    const saved = await questionSync.write(next, revision, editKey);
     if (!saved) {
       applyQuestionBank(await questionSync.read());
       syncError = 'มีการแก้ไขจากอีกเครื่อง กรุณาเปิดคำถามล่าสุดแล้วลองอีกครั้ง';
@@ -160,7 +161,7 @@ async function saveQuestionBank(next, revision = bankRevision) {
     applyQuestionBank(saved);
     return true;
   } catch {
-    syncError = 'บันทึกคำถามไม่ได้ กรุณาตรวจการเชื่อมต่อหรือเข้าสู่ระบบใหม่แล้วลองอีกครั้ง';
+    syncError = 'บันทึกคำถามไม่ได้ กรุณาตรวจการเชื่อมต่อหรือเปิดลิงก์แก้ไขใหม่แล้วลองอีกครั้ง';
     return false;
   } finally {
     savingBank = false;
@@ -168,15 +169,42 @@ async function saveQuestionBank(next, revision = bankRevision) {
   }
 }
 
-function openSignIn() {
-  if (!questionSync) return;
-  if (editorId === questionSync.ownerId) {
-    refreshQuestionBank();
-    return;
+function readEditLink() {
+  const url = new URL(window.location.href);
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  if (fragment.has('edit')) {
+    const key = fragment.get('edit');
+    url.hash = '';
+    window.history.replaceState(null, '', url);
+    return key;
   }
-  $('#signInError').hidden = true;
-  $('#signInSent').hidden = true;
-  $('#signInDialog').showModal();
+  try {
+    return sessionStorage.getItem(editKeyStorage);
+  } catch {
+    return null;
+  }
+}
+
+function closeEditMode() {
+  editKey = null;
+  try { sessionStorage.removeItem(editKeyStorage); } catch {}
+  render();
+}
+
+async function enableEditLink() {
+  const key = readEditLink();
+  if (!key) return;
+  try {
+    if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('Invalid edit link');
+    await questionSync.checkEditLink(key);
+    editKey = key;
+    try { sessionStorage.setItem(editKeyStorage, key); } catch {}
+    render();
+  } catch (error) {
+    if (error.code === '42501' || !/^[a-f0-9]{64}$/.test(key)) closeEditMode();
+    syncError = 'เปิดโหมดแก้ไขไม่ได้ กรุณาตรวจลิงก์แล้วลองเปิดอีกครั้ง';
+    updateSyncControls();
+  }
 }
 
 function initializeQuestionSync() {
@@ -186,48 +214,9 @@ function initializeQuestionSync() {
     return;
   }
   questionSync = createQuestionSync(window.ktQuestionBankConfig);
-  questionSync.auth.onAuthStateChange((_event, session) => {
-    editorId = session?.user.id;
-    render();
-  });
-  $('#cancelSignIn').onclick = () => $('#signInDialog').close();
-  $('#editorSignIn').onsubmit = async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const submit = form.querySelector('[type="submit"]');
-    const errorMessage = $('#signInError');
-    const sentMessage = $('#signInSent');
-    submit.disabled = true;
-    errorMessage.hidden = true;
-    sentMessage.hidden = true;
-    try {
-      const { error } = await questionSync.auth.signInWithOtp({
-        email: form.elements.email.value.trim(),
-        options: {
-          shouldCreateUser: false,
-          emailRedirectTo: new URL('./', window.location.href).href
-        }
-      });
-      if (error) throw error;
-      sentMessage.textContent = 'ส่งลิงก์แล้ว กรุณาเปิดลิงก์ในอีเมลด้วยเบราว์เซอร์นี้';
-      sentMessage.hidden = false;
-    } catch {
-      errorMessage.textContent = 'ส่งลิงก์ไม่ได้ กรุณาตรวจอีเมลหรือรอสักครู่แล้วลองอีกครั้ง';
-      errorMessage.hidden = false;
-    } finally {
-      submit.disabled = false;
-    }
-  };
-  $('#editorSignOut').onclick = async () => {
-    try {
-      const { error } = await questionSync.auth.signOut({ scope: 'local' });
-      if (error) throw error;
-    } catch {
-      syncError = 'ออกจากระบบไม่ได้ กรุณาลองอีกครั้ง';
-      updateSyncControls();
-    }
-  };
-  $('#importQuestions').onclick = async () => {
+  $('#closeEditMode').onclick = closeEditMode;
+  refreshQuestionBank().then(enableEditLink);
+$('#importQuestions').onclick = async () => {
     const next = questionsToImport();
     if (!next) return;
     const prompt = bankRevision === 0
@@ -245,9 +234,9 @@ function initializeQuestionSync() {
   document.addEventListener('visibilitychange', refreshQuestionBank);
   window.addEventListener('focus', refreshQuestionBank);
   window.setInterval(refreshQuestionBank, 30000);
-  refreshQuestionBank();
   updateSyncControls();
 }
+
 
 let mode='slides',slide=0,deck=[],position=0;const opened=new Set();
 const imagePath=i=>`assets/slide-${String(i+1).padStart(2,'0')}.jpg`;
@@ -271,7 +260,7 @@ slides.forEach((s,i)=>{const option=el('option','',s[0]);option.value=String(i);
 slides.forEach((s,i)=>{const b=el('button','thumb');b.setAttribute('aria-label',s[0]);const img=el('img');img.src=imagePath(i);img.alt='';img.loading='lazy';b.append(img,el('small','',s[0]));b.onclick=()=>setSlide(i);$('#thumbnails').append(b);});
 let editingId=null,lastDeleted=null,editorTrigger=null;
 slides.forEach((s,i)=>{const option=el('option','',s[0]);option.value=String(i);$('#questionSlide').append(option);});
-function openEditor(q){if (!canEditQuestions()) { openSignIn(); return; } editingRevision = bankRevision; editingId=q?.id??null;editorTrigger=document.activeElement;$('#editorTitle').textContent=q?'แก้ไขคำถาม':'เพิ่มคำถาม';$('#questionType').value=q?(q.g?'general':'slide'):(mode==='general'?'general':'slide');$('#questionSlide').value=String(q?.s??slide);$('#questionText').value=q?.q??'';$('#answerText').value=q?.a??'';$('#noteText').value=q?.n??'';$('#formError').hidden=true;$('#questionDialog').showModal();$('#questionText').focus();}
+function openEditor(q){if (!canEditQuestions()) return; editingRevision = bankRevision; editingId=q?.id??null;editorTrigger=document.activeElement;$('#editorTitle').textContent=q?'แก้ไขคำถาม':'เพิ่มคำถาม';$('#questionType').value=q?(q.g?'general':'slide'):(mode==='general'?'general':'slide');$('#questionSlide').value=String(q?.s??slide);$('#questionText').value=q?.q??'';$('#answerText').value=q?.a??'';$('#noteText').value=q?.n??'';$('#formError').hidden=true;$('#questionDialog').showModal();$('#questionText').focus();}
 async function deleteQuestion(id) {
   const index = questions.findIndex(question => question.id === id);
   if (index < 0) return;
