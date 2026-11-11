@@ -3,6 +3,31 @@
 <body><header><div><h1>ซ้อมพรีเซน</h1><p>Cleaning Agent Reuse</p></div><button id="progressButton" class="progress" title="ดูข้อที่ยังไม่คล่อง">คล่องแล้ว <b id="knownCount">0</b> / <span id="totalCount">18</span></button></header>
 <main><div class="toolbar"><nav class="modes" aria-label="โหมดซ้อม"><button data-mode="slides" class="active">ตามสไลด์</button><button data-mode="general">ภาพรวม <small id="generalCount">4</small></button><button data-mode="random">สุ่มซ้อม</button><button data-mode="review">ยังไม่คล่อง <small id="reviewCount">0</small></button></nav><button id="addQuestion" class="primary">＋ เพิ่มคำถาม</button></div><div id="deleteNotice" class="delete-notice" role="status" hidden><span>ลบคำถามแล้ว</span><button id="undoDelete">เลิกทำ</button></div>
 <section class="workspace"><aside class="slide-panel"><div class="slide-picker"><label class="sr-only" for="slideSelect">เลือกสไลด์</label><select id="slideSelect"></select><div class="slide-arrows"><button id="prevSlide" aria-label="สไลด์ก่อนหน้า">←</button><button id="nextSlide" aria-label="สไลด์ถัดไป">→</button></div></div><button id="slideImageButton" class="slide-image" aria-label="ขยายภาพสไลด์"><img id="slideImage" src="assets/slide-01.jpg" alt="หน้าปกสไลด์"><span>ขยาย ↗</span></button><span id="slideCounter" class="slide-counter"></span><div id="thumbnails" class="thumbnails" aria-label="เลือกสไลด์จากภาพย่อ"></div></aside>
-<section class="question-panel"><div class="panel-heading"><h2 id="questionHeading">คำถามประจำสไลด์</h2><span id="questionCount" class="count"></span></div><div id="questionList"></div><div id="practiceArea" hidden></div></section></section><p class="save-note" id="saveNote">คำถามบันทึกเฉพาะเบราว์เซอร์นี้</p></main>
+<section class="question-panel"><div class="panel-heading"><h2 id="questionHeading">คำถามประจำสไลด์</h2><span id="questionCount" class="count"></span></div><div id="questionList"></div><div id="practiceArea" hidden></div></section></section><p class="save-note" id="saveNote" role="status">กำลังโหลดคำถามกลาง…</p>
+<div class="editor-actions" id="sharedActions" hidden>
+  <button id="importQuestions" type="button" hidden>นำเข้าคำถามจากเครื่องนี้</button>
+  <button id="editorSignOut" type="button">ออกจากระบบแก้ไข</button>
+</div></main>
 <dialog id="imageDialog"><button id="closeImage" aria-label="ปิดภาพขยาย">✕</button><img id="largeImage" alt="สไลด์ขนาดใหญ่"></dialog>
-<dialog id="questionDialog" aria-labelledby="editorTitle"><form id="questionForm"><div class="editor-heading"><h2 id="editorTitle">เพิ่มคำถาม</h2><button type="button" id="closeEditor" aria-label="ปิดฟอร์ม">✕</button></div><label>หมวดคำถาม<select id="questionType"><option value="slide">คำถามตามสไลด์</option><option value="general">คำถามภาพรวม</option></select></label><label><span id="slideFieldLabel">สไลด์ที่เกี่ยวข้อง</span><select id="questionSlide"></select></label><label>คำถาม<textarea id="questionText" rows="3" required maxlength="2000" placeholder="พิมพ์คำถามที่อยากซ้อม"></textarea></label><label>คำตอบที่เตรียมไว้<textarea id="answerText" rows="5" required maxlength="10000" placeholder="พิมพ์คำตอบ ภาษาไทยหรืออังกฤษก็ได้"></textarea></label><label>หมายเหตุเตรียมตอบ (ไม่บังคับ)<textarea id="noteText" rows="2" maxlength="3000" placeholder="ใจความสำคัญหรือจุดที่ต้องระวัง"></textarea></label><p id="formError" role="alert" hidden></p><div class="editor-actions"><button type="button" id="cancelEditor">ยกเลิก</button><button type="submit" class="primary">บันทึกคำถาม</button></div></form></dialog><script src="app.js"></script></body></html>
+<dialog id="questionDialog" aria-labelledby="editorTitle"><form id="questionForm"><div class="editor-heading"><h2 id="editorTitle">เพิ่มคำถาม</h2><button type="button" id="closeEditor" aria-label="ปิดฟอร์ม">✕</button></div><label>หมวดคำถาม<select id="questionType"><option value="slide">คำถามตามสไลด์</option><option value="general">คำถามภาพรวม</option></select></label><label><span id="slideFieldLabel">สไลด์ที่เกี่ยวข้อง</span><select id="questionSlide"></select></label><label>คำถาม<textarea id="questionText" rows="3" required maxlength="2000" placeholder="พิมพ์คำถามที่อยากซ้อม"></textarea></label><label>คำตอบที่เตรียมไว้<textarea id="answerText" rows="5" required maxlength="10000" placeholder="พิมพ์คำตอบ ภาษาไทยหรืออังกฤษก็ได้"></textarea></label><label>หมายเหตุเตรียมตอบ (ไม่บังคับ)<textarea id="noteText" rows="2" maxlength="3000" placeholder="ใจความสำคัญหรือจุดที่ต้องระวัง"></textarea></label><p id="formError" role="alert" hidden></p><div class="editor-actions"><button type="button" id="cancelEditor">ยกเลิก</button><button type="submit" class="primary">บันทึกคำถาม</button></div></form></dialog><dialog id="signInDialog" aria-labelledby="signInTitle">
+  <form id="editorSignIn">
+    <div class="editor-heading"><h2 id="signInTitle">เข้าสู่ระบบเพื่อแก้ไขคำถาม</h2></div>
+    <label>อีเมล<input name="email" type="email" autocomplete="username" required></label>
+    <p id="signInSent" role="status" hidden></p>
+    <p id="signInError" role="alert" hidden></p>
+    <div class="editor-actions">
+      <button id="cancelSignIn" type="button">ยกเลิก</button>
+      <button class="primary" type="submit">ส่งลิงก์เข้าใช้งาน</button>
+    </div>
+  </form>
+</dialog>
+<style>
+  #signInDialog { width: min(400px, 90vw); }
+  #signInDialog input { display: block; width: 100%; box-sizing: border-box; margin-top: .35rem; padding: .65rem; font: inherit; }
+  #signInDialog label { display: block; margin-top: .8rem; }
+  #sharedActions { justify-content: center; padding-bottom: 1rem; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="question-sync-config.js"></script>
+<script src="question-sync.js"></script>
+<script src="app.js?v=2"></script></body></html>

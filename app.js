@@ -23,13 +23,236 @@ let questions=[
 ].map((q,i)=>({...q,id:i+1}));
 const $=s=>document.querySelector(s);const el=(tag,cls,txt)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(txt!==undefined)n.textContent=txt;return n;};
 let state={};let storageOk=true;try{const saved=JSON.parse(localStorage.getItem('cip-practice-v1')||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))state=saved;}catch{storageOk=false;}
-const questionStorageKey='cip-questions-v1';
-try{const saved=JSON.parse(localStorage.getItem(questionStorageKey)||'null');if(Array.isArray(saved)&&new Set(saved.map(q=>q.id)).size===saved.length&&saved.every(q=>Number.isSafeInteger(q.id)&&q.id>0&&Number.isInteger(q.s)&&q.s>=0&&q.s<slides.length&&typeof q.q==='string'&&q.q.trim()&&typeof q.a==='string'&&q.a.trim()))questions=saved.map(q=>({...q,related:Array.isArray(q.related)?q.related.filter(s=>Number.isInteger(s)&&s>=0&&s<slides.length):[]}));}catch{storageOk=false;}
-function persistQuestions(){try{localStorage.setItem(questionStorageKey,JSON.stringify(questions));}catch{storageOk=false;}}
+function normalizeQuestions(items) {
+  if (!Array.isArray(items)) return null;
+  const ids = new Set();
+  const normalized = [];
+  for (const item of items) {
+    if (!item || !Number.isSafeInteger(item.id) || item.id < 1 || ids.has(item.id)
+      || !Number.isInteger(item.s) || item.s < 0 || item.s >= slides.length
+      || typeof item.q !== 'string' || !item.q.trim()
+      || typeof item.a !== 'string' || !item.a.trim()) return null;
+    ids.add(item.id);
+    const related = Array.isArray(item.related) ? item.related.filter(
+      index => Number.isInteger(index) && index >= 0 && index < slides.length
+    ) : [];
+    normalized.push({
+      id: item.id, s: item.s, q: item.q, a: item.a, g: Boolean(item.g),
+      n: typeof item.n === 'string' ? item.n : '', related
+    });
+  }
+  return normalized;
+}
+
+const initialQuestions = normalizeQuestions(questions);
+let legacyQuestions = null;
+let legacyImported = false;
+try {
+  legacyQuestions = normalizeQuestions(JSON.parse(localStorage.getItem('cip-questions-v1')));
+  legacyImported = localStorage.getItem('kt-legacy-imported-v1') === 'yes';
+} catch {
+  // The original questions are still available if browser storage is unavailable.
+}
+if (legacyQuestions) questions = legacyQuestions;
+const legacyChanges = legacyQuestions && JSON.stringify(legacyQuestions) !== JSON.stringify(initialQuestions);
+
+function questionContent({ id, ...content }) {
+  return JSON.stringify(content);
+}
+
+function questionsToImport() {
+  if (!legacyChanges || legacyImported || bankRevision === null) return null;
+  if (bankRevision === 0) return legacyQuestions;
+
+  const originals = new Map(initialQuestions.map(item => [item.id, questionContent(item)]));
+  const merged = questions.slice();
+  const current = new Set(questions.map(questionContent));
+  let nextId = Math.max(Date.now(), ...questions.map(item => item.id + 1));
+  for (const local of legacyQuestions) {
+    const content = questionContent(local);
+    if (originals.get(local.id) === content || current.has(content)) continue;
+    const index = merged.findIndex(item => item.id === local.id);
+    if (index >= 0 && questionContent(merged[index]) === originals.get(local.id)) {
+      merged[index] = local;
+    } else {
+      merged.push({ ...local, id: nextId++ });
+    }
+    current.add(content);
+  }
+  return JSON.stringify(merged) !== JSON.stringify(questions) ? merged : null;
+}
+
+let questionSync;
+let editorId;
+let bankRevision = null;
+let editingRevision;
+let readingBank = false;
+let savingBank = false;
+let syncStatus = 'กำลังโหลดคำถามกลาง…';
+let syncError = '';
+
+function canEditQuestions() {
+  return Boolean(questionSync && editorId === questionSync.ownerId && bankRevision !== null);
+}
+
+function updateSyncControls() {
+  const editor = canEditQuestions();
+  $('#addQuestion').disabled = !questionSync || savingBank;
+  $('#addQuestion').textContent = editor ? '＋ เพิ่มคำถาม' : 'เข้าสู่ระบบเพื่อแก้ไข';
+  $('#sharedActions').hidden = !editor;
+  $('#importQuestions').hidden = !editor || !questionsToImport();
+  $('#importQuestions').disabled = savingBank;
+  $('#editorSignOut').disabled = savingBank;
+  $('#undoDelete').disabled = savingBank || !editor;
+  $('#saveNote').textContent = syncError || syncStatus;
+}
+
+function applyQuestionBank(record) {
+  const items = record?.revision === 0 && record.questions === null
+    ? initialQuestions
+    : normalizeQuestions(record?.questions);
+  if (!items || !Number.isSafeInteger(record.revision) || record.revision < 0) {
+    throw new Error('ข้อมูลคำถามกลางไม่ถูกต้อง');
+  }
+  if (bankRevision !== null && record.revision < bankRevision) return;
+  const latestById = new Map(items.map(item => [item.id, item]));
+  const skippedBeforeCurrent = deck.slice(0, position).filter(item => !latestById.has(item.id)).length;
+  deck = deck.filter(item => latestById.has(item.id)).map(item => latestById.get(item.id));
+  position = Math.min(position - skippedBeforeCurrent, deck.length);
+  bankRevision = record.revision;
+  questions = items;
+  syncStatus = 'คำถามชุดเดียวกันทุกเครื่อง · สถานะการซ้อมเก็บในเครื่องนี้';
+  syncError = '';
+  render();
+}
+
+async function refreshQuestionBank() {
+  if (!questionSync || readingBank || savingBank || document.hidden || $('#questionDialog').open) return;
+  readingBank = true;
+  try {
+    const record = await questionSync.read();
+    if (!savingBank && !$('#questionDialog').open && record.revision !== bankRevision) {
+      applyQuestionBank(record);
+    } else if (record.revision === bankRevision) {
+      syncStatus = 'คำถามชุดเดียวกันทุกเครื่อง · สถานะการซ้อมเก็บในเครื่องนี้';
+      updateSyncControls();
+    }
+  } catch {
+    syncStatus = 'ติดต่อคลังคำถามกลางไม่ได้ · กำลังแสดงคำถามที่มีอยู่';
+    updateSyncControls();
+  } finally {
+    readingBank = false;
+  }
+}
+
+async function saveQuestionBank(next, revision = bankRevision) {
+  if (!canEditQuestions() || savingBank) return false;
+  savingBank = true;
+  syncError = '';
+  updateSyncControls();
+  try {
+    const saved = await questionSync.write(next, revision);
+    if (!saved) {
+      applyQuestionBank(await questionSync.read());
+      syncError = 'มีการแก้ไขจากอีกเครื่อง กรุณาเปิดคำถามล่าสุดแล้วลองอีกครั้ง';
+      return false;
+    }
+    applyQuestionBank(saved);
+    return true;
+  } catch {
+    syncError = 'บันทึกคำถามไม่ได้ กรุณาตรวจการเชื่อมต่อหรือเข้าสู่ระบบใหม่แล้วลองอีกครั้ง';
+    return false;
+  } finally {
+    savingBank = false;
+    updateSyncControls();
+  }
+}
+
+function openSignIn() {
+  if (!questionSync) return;
+  if (editorId === questionSync.ownerId) {
+    refreshQuestionBank();
+    return;
+  }
+  $('#signInError').hidden = true;
+  $('#signInSent').hidden = true;
+  $('#signInDialog').showModal();
+}
+
+function initializeQuestionSync() {
+  if (!window.ktQuestionBankConfig || !window.supabase) {
+    syncStatus = 'ยังไม่ได้เชื่อมคลังคำถามกลาง';
+    updateSyncControls();
+    return;
+  }
+  questionSync = createQuestionSync(window.ktQuestionBankConfig);
+  questionSync.auth.onAuthStateChange((_event, session) => {
+    editorId = session?.user.id;
+    render();
+  });
+  $('#cancelSignIn').onclick = () => $('#signInDialog').close();
+  $('#editorSignIn').onsubmit = async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submit = form.querySelector('[type="submit"]');
+    const errorMessage = $('#signInError');
+    const sentMessage = $('#signInSent');
+    submit.disabled = true;
+    errorMessage.hidden = true;
+    sentMessage.hidden = true;
+    try {
+      const { error } = await questionSync.auth.signInWithOtp({
+        email: form.elements.email.value.trim(),
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: new URL('./', window.location.href).href
+        }
+      });
+      if (error) throw error;
+      sentMessage.textContent = 'ส่งลิงก์แล้ว กรุณาเปิดลิงก์ในอีเมลด้วยเบราว์เซอร์นี้';
+      sentMessage.hidden = false;
+    } catch {
+      errorMessage.textContent = 'ส่งลิงก์ไม่ได้ กรุณาตรวจอีเมลหรือรอสักครู่แล้วลองอีกครั้ง';
+      errorMessage.hidden = false;
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  $('#editorSignOut').onclick = async () => {
+    try {
+      const { error } = await questionSync.auth.signOut({ scope: 'local' });
+      if (error) throw error;
+    } catch {
+      syncError = 'ออกจากระบบไม่ได้ กรุณาลองอีกครั้ง';
+      updateSyncControls();
+    }
+  };
+  $('#importQuestions').onclick = async () => {
+    const next = questionsToImport();
+    if (!next) return;
+    const prompt = bankRevision === 0
+      ? 'ใช้ชุดคำถามจากเครื่องนี้เป็นชุดกลางสำหรับทุกคนที่เปิดลิงก์เว็บหรือไม่?'
+      : 'รวมคำถามที่เพิ่มหรือแก้ไขบนเครื่องนี้เข้าชุดกลางสำหรับทุกคนที่เปิดลิงก์เว็บหรือไม่?';
+    if (!window.confirm(prompt) || !await saveQuestionBank(next)) return;
+    legacyImported = true;
+    try {
+      localStorage.setItem('kt-legacy-imported-v1', 'yes');
+    } catch {
+      // The current tab still remembers that the import succeeded.
+    }
+    updateSyncControls();
+  };
+  document.addEventListener('visibilitychange', refreshQuestionBank);
+  window.addEventListener('focus', refreshQuestionBank);
+  window.setInterval(refreshQuestionBank, 30000);
+  refreshQuestionBank();
+  updateSyncControls();
+}
+
 let mode='slides',slide=0,deck=[],position=0;const opened=new Set();
 const imagePath=i=>`assets/slide-${String(i+1).padStart(2,'0')}.jpg`;
 function save(){try{localStorage.setItem('cip-practice-v1',JSON.stringify(state));}catch{storageOk=false;}updateCounts();}
-function updateCounts(){$('#totalCount').textContent=questions.length;$('#generalCount').textContent=questions.filter(q=>q.g).length;$('#knownCount').textContent=questions.filter(q=>state[q.id]==='known').length;$('#reviewCount').textContent=questions.filter(q=>state[q.id]==='review').length;$('#saveNote').textContent=storageOk?'คำถามและสถานะบันทึกเฉพาะเบราว์เซอร์นี้ · มือถือและไอแพดแยกกัน':'เบราว์เซอร์นี้บันทึกไม่ได้ · คำถามและสถานะที่เปลี่ยนจะอยู่เฉพาะจนกว่าจะปิดหรือโหลดหน้านี้ใหม่';}
+function updateCounts(){$('#totalCount').textContent=questions.length;$('#generalCount').textContent=questions.filter(q=>q.g).length;$('#knownCount').textContent=questions.filter(q=>state[q.id]==='known').length;$('#reviewCount').textContent=questions.filter(q=>state[q.id]==='review').length;updateSyncControls();}
 function shuffle(items){const a=[...items];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
 function setMode(next){mode=next;opened.clear();if(next==='random'){deck=shuffle(questions);position=0;}if(next==='review'){deck=shuffle(questions.filter(q=>state[q.id]==='review'));position=0;}render();}
 function setSlide(i){slide=Math.max(0,Math.min(slides.length-1,i));renderSlide();if(mode==='slides')renderQuestions();}
@@ -37,7 +260,7 @@ function renderSlide(){$('#slideSelect').value=String(slide);$('#slideCounter').
 function card(q){const root=el('article','qcard');const top=el('div','qtop');top.append(el('span','qtag',`${q.g?'ภาพรวม':slides[q.s][0]}`));const status=el('span','status');top.append(status);root.append(top,el('h3','',q.q));const reveal=el('button','reveal');reveal.type='button';reveal.setAttribute('aria-controls',`answer-${q.id}`);root.append(reveal);const answer=el('div','answer');answer.id=`answer-${q.id}`;answer.append(el('p','english',q.a));if(q.n){const note=el('details','note');note.append(el('summary','','หมายเหตุเตรียมตอบ'),el('p','',q.n));answer.append(note);}const ratings=el('div','rating');const buttons=[];[['review','♡ ยังไม่คล่อง'],['known','✓ คล่องแล้ว']].forEach(([value,label])=>{const b=el('button','',label);b.dataset.rating=value;b.onclick=()=>{if(state[q.id]===value)delete state[q.id];else state[q.id]=value;save();syncStatus();};ratings.append(b);buttons.push(b);});answer.append(ratings);root.append(answer);
 function syncStatus(){const value=state[q.id];status.textContent=value==='known'?'✓ คล่องแล้ว':value==='review'?'♡ ซ้อมอีกนิด':'';status.classList.toggle('good',value==='known');buttons.forEach(b=>{b.classList.toggle('chosen',state[q.id]===b.dataset.rating);b.setAttribute('aria-pressed',state[q.id]===b.dataset.rating?'true':'false');});}
 function syncOpen(){const yes=opened.has(q.id);root.classList.toggle('open',yes);answer.hidden=!yes;reveal.textContent=yes?'ซ่อนคำตอบ ↑':'เปิดคำตอบ ↓';reveal.setAttribute('aria-expanded',yes?'true':'false');}
-reveal.onclick=()=>{if(opened.has(q.id))opened.delete(q.id);else opened.add(q.id);syncOpen();};syncOpen();syncStatus();if(mode!=='slides'){const link=el('button','source-link',`ดูสไลด์ที่เกี่ยวข้อง ↗ ${slides[q.s][0]}`);link.onclick=()=>{$('#slideImageButton').dataset.returnFocus='true';setSlide(q.s);showImage(link);};root.append(link);}const tools=el('div','question-tools');const edit=el('button','','แก้ไข');edit.setAttribute('aria-label',`แก้ไขคำถาม: ${q.q}`);edit.onclick=()=>openEditor(q);const remove=el('button','delete-question','ลบคำถาม');remove.setAttribute('aria-label',`ลบคำถาม: ${q.q}`);remove.onclick=()=>deleteQuestion(q.id);tools.append(edit,remove);root.append(tools);return root;}
+reveal.onclick=()=>{if(opened.has(q.id))opened.delete(q.id);else opened.add(q.id);syncOpen();};syncOpen();syncStatus();if(mode!=='slides'){const link=el('button','source-link',`ดูสไลด์ที่เกี่ยวข้อง ↗ ${slides[q.s][0]}`);link.onclick=()=>{$('#slideImageButton').dataset.returnFocus='true';setSlide(q.s);showImage(link);};root.append(link);}const tools=el('div','question-tools');const edit=el('button','','แก้ไข');edit.setAttribute('aria-label',`แก้ไขคำถาม: ${q.q}`);edit.onclick=()=>openEditor(q);const remove=el('button','delete-question','ลบคำถาม');remove.setAttribute('aria-label',`ลบคำถาม: ${q.q}`);remove.onclick=()=>deleteQuestion(q.id);tools.append(edit,remove);if (canEditQuestions()) root.append(tools);return root;}
 function empty(title,text,label,action){const n=el('div','empty');n.append(el('b','',title),el('p','',text));if(label){const b=el('button','primary',label);b.onclick=action;n.append(b);}return n;}
 function renderQuestions(){const list=$('#questionList'),area=$('#practiceArea');list.replaceChildren();area.replaceChildren();const practice=mode==='random'||mode==='review';list.hidden=practice;area.hidden=!practice;const labels={slides:['PRACTICE BY SLIDE','คำถามประจำสไลด์'],general:['THE BIG PICTURE','คำถามภาพรวม'],random:['REHEARSE & REPEAT','สุ่มคำถาม'],review:['A LITTLE MORE PRACTICE','ยังไม่คล่อง']};$('#questionHeading').textContent=labels[mode][1];if(!practice){const items=mode==='general'?questions.filter(q=>q.g):questions.filter(q=>!q.g&&(q.s===slide||q.related?.includes(slide)));$('#questionCount').textContent=`${items.length} คำถาม`;if(!items.length)list.append(empty('หน้านี้ไม่มีคำถามที่เตรียมไว้','เลือกสไลด์ถัดไป หรือซ้อมคำถามภาพรวมได้เลย','ไปที่คำถามภาพรวม',()=>setMode('general')));else items.forEach(q=>list.append(card(q)));return;}
 $('#questionCount').textContent=mode==='review'?`${deck.length} ข้อในรอบนี้`:`${deck.length} คำถาม`;if(!deck.length){area.append(mode==='review'?empty('ยังไม่มีข้อที่ทำเครื่องหมายไว้','เปิดคำตอบแล้วแตะ “ยังไม่คล่อง” เพื่อเก็บข้อที่อยากกลับมาซ้อม','เริ่มสุ่มซ้อม',()=>setMode('random')):empty('ยังไม่มีคำถามให้สุ่ม','เพิ่มคำถามและคำตอบเพื่อเริ่มซ้อม','เพิ่มคำถาม',()=>openEditor()));return;}
@@ -48,10 +271,83 @@ slides.forEach((s,i)=>{const option=el('option','',s[0]);option.value=String(i);
 slides.forEach((s,i)=>{const b=el('button','thumb');b.setAttribute('aria-label',s[0]);const img=el('img');img.src=imagePath(i);img.alt='';img.loading='lazy';b.append(img,el('small','',s[0]));b.onclick=()=>setSlide(i);$('#thumbnails').append(b);});
 let editingId=null,lastDeleted=null,editorTrigger=null;
 slides.forEach((s,i)=>{const option=el('option','',s[0]);option.value=String(i);$('#questionSlide').append(option);});
-function openEditor(q){editingId=q?.id??null;editorTrigger=document.activeElement;$('#editorTitle').textContent=q?'แก้ไขคำถาม':'เพิ่มคำถาม';$('#questionType').value=q?(q.g?'general':'slide'):(mode==='general'?'general':'slide');$('#questionSlide').value=String(q?.s??slide);$('#questionText').value=q?.q??'';$('#answerText').value=q?.a??'';$('#noteText').value=q?.n??'';$('#formError').hidden=true;$('#questionDialog').showModal();$('#questionText').focus();}
-function deleteQuestion(id){const index=questions.findIndex(q=>q.id===id);if(index<0)return;lastDeleted={question:questions[index],index,status:state[id]};questions.splice(index,1);delete state[id];opened.delete(id);const deckIndex=deck.findIndex(q=>q.id===id);deck=deck.filter(q=>q.id!==id);if(deckIndex>=0&&deckIndex<position)position--;persistQuestions();save();render();$('#deleteNotice').hidden=false;}
-$('#undoDelete').onclick=()=>{if(!lastDeleted)return;const {question,index,status}=lastDeleted;questions.splice(Math.min(index,questions.length),0,question);if(status)state[question.id]=status;lastDeleted=null;$('#deleteNotice').hidden=true;persistQuestions();save();setMode(mode);};
-$('#questionForm').onsubmit=e=>{e.preventDefault();const q=$('#questionText').value.trim(),a=$('#answerText').value.trim(),s=Number($('#questionSlide').value);if(!q||!a||!Number.isInteger(s)||s<0||s>=slides.length){$('#formError').textContent='กรุณาระบุคำถาม คำตอบ และสไลด์ที่เกี่ยวข้อง';$('#formError').hidden=false;return;}const old=questions.find(item=>item.id===editingId);const item={...(old||{}),id:editingId??Math.max(0,...questions.map(item=>item.id),lastDeleted?.question.id??0)+1,s,g:$('#questionType').value==='general',q,a,n:$('#noteText').value.trim()};if(old&&old.s!==s)delete item.related;if(old)questions[questions.indexOf(old)]=item;else questions.push(item);persistQuestions();$('#questionDialog').close();if(item.g)setMode('general');else{slide=s;setMode('slides');}opened.add(item.id);renderQuestions();updateCounts();};
+function openEditor(q){if (!canEditQuestions()) { openSignIn(); return; } editingRevision = bankRevision; editingId=q?.id??null;editorTrigger=document.activeElement;$('#editorTitle').textContent=q?'แก้ไขคำถาม':'เพิ่มคำถาม';$('#questionType').value=q?(q.g?'general':'slide'):(mode==='general'?'general':'slide');$('#questionSlide').value=String(q?.s??slide);$('#questionText').value=q?.q??'';$('#answerText').value=q?.a??'';$('#noteText').value=q?.n??'';$('#formError').hidden=true;$('#questionDialog').showModal();$('#questionText').focus();}
+async function deleteQuestion(id) {
+  const index = questions.findIndex(question => question.id === id);
+  if (index < 0) return;
+  const deleted = { question: questions[index], index, status: state[id] };
+  if (!await saveQuestionBank(questions.filter(question => question.id !== id))) return;
+  lastDeleted = deleted;
+  delete state[id];
+  opened.delete(id);
+  save();
+  $('#deleteNotice').hidden = false;
+}
+
+$('#undoDelete').onclick = async () => {
+  if (!lastDeleted) return;
+  const { question, index, status } = lastDeleted;
+  if (questions.some(item => item.id === question.id)) return;
+  const restored = questions.slice();
+  restored.splice(Math.min(index, restored.length), 0, question);
+  if (!await saveQuestionBank(restored)) return;
+  if (status) state[question.id] = status;
+  lastDeleted = null;
+  $('#deleteNotice').hidden = true;
+  save();
+  render();
+};
+
+$('#questionForm').onsubmit = async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $('#formError');
+  const submit = form.querySelector('[type="submit"]');
+  const q = $('#questionText').value.trim();
+  const a = $('#answerText').value.trim();
+  const s = Number($('#questionSlide').value);
+  if (!q || !a || !Number.isInteger(s) || s < 0 || s >= slides.length) {
+    message.textContent = 'กรุณาระบุคำถาม คำตอบ และสไลด์ที่เกี่ยวข้อง';
+    message.hidden = false;
+    return;
+  }
+  if (!canEditQuestions() || savingBank) return;
+  const previous = questions.find(item => item.id === editingId);
+  if (editingId !== null && (!previous || editingRevision !== bankRevision)) {
+    message.textContent = 'มีการแก้ไขจากอีกเครื่อง กรุณาเปิดคำถามล่าสุดแล้วลองอีกครั้ง';
+    message.hidden = false;
+    return;
+  }
+  const item = {
+    id: previous?.id ?? Math.max(Date.now(), ...questions.map(item => item.id + 1)),
+    s, q, a, g: $('#questionType').value === 'general',
+    n: $('#noteText').value.trim(),
+    related: previous?.s === s ? previous.related : []
+  };
+  const next = previous ? questions.map(question => question.id === item.id ? item : question) : [...questions, item];
+  submit.disabled = true;
+  message.hidden = true;
+  try {
+    if (!await saveQuestionBank(next, bankRevision)) {
+      message.textContent = syncError || 'กรุณาเข้าสู่ระบบเพื่อแก้ไขอีกครั้ง';
+      message.hidden = false;
+      return;
+    }
+    $('#questionDialog').close();
+    if (item.g) setMode('general');
+    else {
+      slide = s;
+      setMode('slides');
+    }
+    opened.add(item.id);
+    renderQuestions();
+  } finally {
+    submit.disabled = false;
+  }
+};
+
 $('#addQuestion').onclick=()=>openEditor();$('#closeEditor').onclick=()=>$('#questionDialog').close();$('#cancelEditor').onclick=()=>$('#questionDialog').close();$('#questionDialog').addEventListener('close',()=>{if(editorTrigger?.isConnected)editorTrigger.focus();else $('#addQuestion').focus();});
 document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#prevSlide').onclick=()=>setSlide(slide-1);$('#nextSlide').onclick=()=>setSlide(slide+1);$('#progressButton').onclick=()=>setMode('review');
 let imageTrigger=null;function showImage(trigger){imageTrigger=trigger;$('#largeImage').src=imagePath(slide);$('#largeImage').alt=slides[slide][0];$('#imageDialog').showModal();}$('#slideImageButton').onclick=()=>showImage($('#slideImageButton'));$('#closeImage').onclick=()=>$('#imageDialog').close();$('#imageDialog').addEventListener('click',e=>{if(e.target===$('#imageDialog')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close();}});$('#imageDialog').addEventListener('close',()=>imageTrigger?.focus());render();
+
+initializeQuestionSync();
